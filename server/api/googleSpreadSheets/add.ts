@@ -1,78 +1,123 @@
-import { google } from 'googleapis';
-import { defineEventHandler, readBody } from 'h3';
-// JWT の直接インポートは不要になるかもしれません
-// import { JWT } from 'google-auth-library';
+import { defineEventHandler, readBody } from 'h3'
+import { SignJWT, importPKCS8 } from 'jose' // importPKCS8 をインポート
 
 export default defineEventHandler(async (event) => {
   try {
-    console.log('Event handler started'); // デバッグ用ログ
-    const config = useRuntimeConfig(event); // event を渡すことを推奨
-    const body = await readBody(event);
-    const { from, fromMemberId, to, toMemberIds, message } = body;
+    const config = useRuntimeConfig()
+    const body = await readBody(event)
+    const { from, fromMemberId, to, toMemberIds, message } = body
 
-    console.log('Received data:', { from, fromMemberId, to, toMemberIds, message });
+    // JWT トークンを生成してアクセストークンを取得
+    const accessToken = await getAccessToken(config)
 
-    console.log('Using Google Sheets API with config:', {
-      spreadsheetId: config.google.spreadsheetId,
-      serviceAccountEmail: config.google.serviceAccountEmail,
-      privateKey: config.google.privateKey ? '***' : 'not set', // セキュリティのため、privateKeyは表示しない
-    });
+    const spreadsheetId = config.google.spreadsheetId
+    const range = '感謝メッセージ一覧シート!A2' // 適切なシート名と範囲を指定してください
+    const date = new Date()
+    const currentDate = date.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })
 
-    // Google Sheets API の認証 (GoogleAuth を使用)
-    const authClient = new google.auth.GoogleAuth({
-      credentials: {
-        client_email: config.google.serviceAccountEmail,
-        private_key: config.google.privateKey.replace(/\\n/g, '\n'),
+    // Google Sheets API の values.append エンドポイントを直接呼び出し
+    const apiUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED` // valueInputOptionをUSER_ENTEREDに変更する方が一般的です
+
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
       },
-      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-    });
-
-    // authClient を直接渡すか、必要に応じて getClient() を呼び出す
-    // const client = await authClient.getClient(); // 不要な場合もある
-    const sheets = google.sheets({ version: 'v4', auth: authClient }); // authClient を直接渡す
-
-    const spreadsheetId = config.google.spreadsheetId;
-    // シート名にスペースが含まれる場合はそのまま文字列として扱われますが、
-    // エラーの原因になりうる場合はシングルクォートで囲むことも検討できます。
-    // ただし、通常は不要です。
-    const range = '感謝メッセージ一覧シート!A2'; // ここで指定するA2は、実際にはappendなので無視され、最終行に追加されます。
-
-    const date = new Date();
-    // toLocaleString は実行環境によってタイムゾーンの解釈が異なる場合があるため、
-    // UTCで日付を管理し、スプレッドシート側で表示形式を調整する方が堅牢な場合があります。
-    // もしくは、Cloudflare Workers 環境で Asia/Tokyo が正しく解釈されるか確認が必要です。
-    const currentDate = date.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
-
-    const response = await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range, // 追記の場合、シート名だけでも可 '感謝メッセージ一覧シート'
-      valueInputOption: 'USER_ENTERED', // 'RAW' よりも 'USER_ENTERED' の方が日付などがスプレッドシート側で解釈されやすい
-      insertDataOption: 'INSERT_ROWS', // 明示的に行を挿入するオプション
-      requestBody: { // v4 APIでは resource キーが推奨される場合がありますが、requestBodyでも動作します。
+      body: JSON.stringify({
+        // valueInputOption: 'RAW', // RAWの代わりにUSER_ENTEREDを使用するか、クエリパラメータで指定
         values: [[from, fromMemberId, to, toMemberIds, message, currentDate]],
-      },
-    });
+      }),
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json()
+      console.error('Google Sheets API Error Response:', errorData); // エラーレスポンスを詳細にログ出力
+      throw new Error(`Google Sheets API Error: ${response.status} - ${JSON.stringify(errorData)}`)
+    }
+
+    const data = await response.json()
 
     return {
-      success: true, // 成功したことを示すフラグを追加するとクライアント側で扱いやすい
-      data: response.data,
+      data,
       error: null,
-    };
-  } catch (error: any) { // エラーの型を any または unknown にする
-    console.error('Error in Google Sheets API handler:', error); // サーバー側で詳細なエラーログを出力
-    // エラーレスポンスをより詳細にする
-    const errorMessage = error.response?.data?.error?.message || error.message || 'Unknown error occurred';
-    const statusCode = error.response?.status || 500;
-
-    // createError を使ってエラーレスポンスを返す (Nuxt/Nitro の標準的な方法)
-    // この場合、関数の戻り値の型定義も変わる可能性があります。
-    // throw createError({ statusCode, statusMessage: errorMessage });
-    // または、現状の形式を維持する場合：
-    return {
-      success: false,
-      data: null,
-      error: errorMessage,
-      statusCode: statusCode // クライアントにステータスコードを伝える
-    };
+    }
   }
-});
+  catch (error) {
+    console.error('Handler Error:', error); // ハンドラ全体のエラーをログ出力
+    if (error instanceof Error) {
+      return {
+        data: null,
+        error: error.message,
+      }
+    }
+    else {
+      return {
+        data: null,
+        error: 'Unknown error occurred',
+      }
+    }
+  }
+})
+
+// Google OAuth 2.0 のアクセストークンを取得する関数
+async function getAccessToken(config: any): Promise<string> {
+  try {
+    // 秘密鍵をインポート
+    // 秘密鍵の文字列からヘッダーとフッター、改行コードを取り除く
+    const privateKeyString = config.google.privateKey
+        .replace('-----BEGIN PRIVATE KEY-----', '')
+        .replace('-----END PRIVATE KEY-----', '')
+        .replace(/\\n/g, ''); // 環境変数などから読み込む際に \n が \\n となっている場合を考慮
+
+    // joseのimportPKCS8を使用して秘密鍵をインポート
+    // 第2引数にはアルゴリズムを指定します。Googleのサービスアカウントキーは通常'RS256'です。
+    const privateKey = await importPKCS8(config.google.privateKey, 'RS256')
+
+
+    // JWT を作成
+    const now = Math.floor(Date.now() / 1000)
+    const jwt = await new SignJWT({
+      // iss と sub にはサービスアカウントのメールアドレスを指定
+      iss: config.google.serviceAccountEmail,
+      sub: config.google.serviceAccountEmail,
+      // scope には必要な権限を指定
+      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      // aud にはトークンエンドポイントを指定
+      aud: 'https://oauth2.googleapis.com/token',
+      iat: now, // 発行時刻
+      exp: now + 3600, // 1時間後に期限切れ
+    })
+      .setProtectedHeader({ alg: 'RS256', typ: 'JWT' }) // typ: 'JWT' を追加することが推奨されます
+      .sign(privateKey) // インポートした秘密鍵で署名
+
+    // アクセストークンを取得
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: jwt,
+      }),
+    })
+
+    if (!tokenResponse.ok) {
+      const errorData = await tokenResponse.json()
+      console.error('Token Request Error Response:', errorData); // エラーレスポンスを詳細にログ出力
+      throw new Error(`Token request failed: ${tokenResponse.status} - ${JSON.stringify(errorData)}`)
+    }
+
+    interface TokenData {
+      access_token: string;
+    }
+
+    const tokenData = await tokenResponse.json() as TokenData
+    return tokenData.access_token
+  }
+  catch (error) {
+    console.error('Get Access Token Error:', error); // アクセストークン取得時のエラーをログ出力
+    throw new Error(`Failed to get access token: ${error instanceof Error ? error.message : 'Unknown error'}`)
+  }
+}
