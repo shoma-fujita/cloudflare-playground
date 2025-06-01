@@ -5,9 +5,18 @@ import { defineEventHandler, readBody } from 'h3';
 
 export default defineEventHandler(async (event) => {
   try {
+    console.log('Event handler started'); // デバッグ用ログ
     const config = useRuntimeConfig(event); // event を渡すことを推奨
     const body = await readBody(event);
     const { from, fromMemberId, to, toMemberIds, message } = body;
+
+    console.log('Received data:', { from, fromMemberId, to, toMemberIds, message });
+
+    console.log('Using Google Sheets API with config:', {
+      spreadsheetId: config.google.spreadsheetId,
+      serviceAccountEmail: config.google.serviceAccountEmail,
+      privateKey: config.google.privateKey ? '***' : 'not set', // セキュリティのため、privateKeyは表示しない
+    });
 
     // Google Sheets API の認証 (GoogleAuth を使用)
     const authClient = new google.auth.GoogleAuth({

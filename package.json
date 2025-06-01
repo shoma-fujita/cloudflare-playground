@@ -12,6 +12,7 @@
 		"cf-typegen": "wrangler types"
 	},
 	"dependencies": {
+		"google-auth-library": "^9.15.1",
 		"googleapis": "^149.0.0",
 		"nuxt": "^3.17.4",
 		"vue": "^3.5.15",
