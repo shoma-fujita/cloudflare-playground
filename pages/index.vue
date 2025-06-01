@@ -20,9 +20,9 @@ const submit = async () => {
 </script>
 
 <template>
-  <div class="Top">
-      <h1 class="Top__title">ありがとうを伝える</h1>
-      <button @click="submit" class="Top__button">
+  <div>
+      <h1>ありがとうを伝える</h1>
+      <button @click="submit">
         ありがとうを伝える
       </button>
   </div>
